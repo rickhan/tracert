@@ -83,6 +83,9 @@ impl Pinger {
     pub async fn ping_async(&self) -> Result<PingResult, String> {
         super::ping(self.clone(), &self.progress_tx).await
     }
+    pub async fn ping_async_onece(&self) -> Result<PingResult, String> {
+        super::once_ping(self.clone(), &self.progress_tx).await
+    }
     /// Sets the source IP address.
     pub fn set_src_ip(&mut self, src_ip: IpAddr) {
         self.src_ip = src_ip;

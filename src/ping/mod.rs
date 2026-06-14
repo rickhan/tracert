@@ -1,7 +1,7 @@
 mod pinger;
 mod probe;
 pub use pinger::*;
-pub(crate) use probe::ping;
+pub(crate) use probe::{once_ping, ping};
 
 use crate::node::Node;
 use std::time::Duration;

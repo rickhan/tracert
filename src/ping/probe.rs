@@ -132,6 +132,74 @@ async fn icmp_ping(
     })
 }
 
+/// ping without hostname
+async fn icmp_ping_once_lite(
+    pinger: Pinger,
+    progress_tx: &broadcast::Sender<Node>,
+) -> Result<PingResult, String> {
+    // let hostname =
+    //     dns_lookup::lookup_addr(&pinger.dst_ip).unwrap_or_else(|_| pinger.dst_ip.to_string());
+    let mut results: Vec<Node> = Vec::with_capacity(1);
+
+    let family = SocketFamily::from_ip(&pinger.dst_ip);
+    let mut cfg = IcmpConfig::new(family);
+    if pinger.dst_ip.is_ipv4() {
+        cfg.ttl = Some(pinger.ttl as u32);
+    } else {
+        cfg.hop_limit = Some(pinger.ttl as u32);
+    }
+    let icmp_socket = AsyncIcmpSocket::new(&cfg)
+        .await
+        .map_err(|e| format!("{}", e))?;
+
+    let socket_addr = SocketAddr::new(pinger.dst_ip, 0);
+    let icmp_packet: Vec<u8> = if pinger.dst_ip.is_ipv4() {
+        packet::build_icmpv4_echo_packet()
+    } else {
+        packet::build_icmpv6_echo_packet()
+    };
+
+    let send_time = Instant::now();
+    icmp_socket
+        .send_to(&icmp_packet, socket_addr)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 2048];
+    let recv = tokio::time::timeout(pinger.receive_timeout, async {
+        loop {
+            let (bytes_len, _) = icmp_socket.recv_from(&mut buf).await?;
+            if let Some((ip_addr, ttl, is_echo_reply)) =
+                recv_icmp_reply(pinger.dst_ip, &buf, bytes_len)
+                && is_echo_reply
+            {
+                return Ok::<_, std::io::Error>((ip_addr, ttl));
+            }
+        }
+    })
+    .await;
+    if let Ok(Ok((ip_addr, ttl))) = recv {
+        let recv_time = Instant::now().duration_since(send_time);
+        let node = Node {
+            sequence: 1,
+            ip_addr,
+            hostname: "".to_string(),
+            ttl,
+            hop_count: ttl.map(|v| super::guess_initial_ttl(v) - v),
+            node_type: NodeType::Destination,
+            rtt: recv_time,
+        };
+        results.push(node.clone());
+        send_progress(progress_tx, node);
+    }
+
+    let probe_time = Instant::now().duration_since(send_time);
+    Ok(PingResult {
+        results,
+        status: PingStatus::Done,
+        probe_time,
+    })
+}
+
 async fn tcp_ping(
     pinger: Pinger,
     progress_tx: &broadcast::Sender<Node>,
@@ -295,5 +363,17 @@ pub(crate) async fn ping(
         ProbeProtocol::Icmpv6 => icmp_ping(pinger, progress_tx).await,
         ProbeProtocol::Tcp => tcp_ping(pinger, progress_tx).await,
         ProbeProtocol::Udp => udp_ping(pinger, progress_tx).await,
+    }
+}
+
+pub(crate) async fn once_ping(
+    pinger: Pinger,
+    progress_tx: &broadcast::Sender<Node>,
+) -> Result<PingResult, String> {
+    match pinger.protocol {
+        ProbeProtocol::Icmpv4 => icmp_ping_once_lite(pinger, progress_tx).await,
+        ProbeProtocol::Icmpv6 => icmp_ping_once_lite(pinger, progress_tx).await,
+        ProbeProtocol::Tcp => Err("unsupported for tcp".to_string()),
+        ProbeProtocol::Udp => Err("unsupported for udp".to_string()),
     }
 }
