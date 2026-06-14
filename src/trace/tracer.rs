@@ -73,7 +73,7 @@ impl Tracer {
     }
 
     /// Runs tracerroute_lite asynchronously
-    pub async fn tracer_lite_async(&self) -> Result<(), String> {
+    pub async fn tracer_lite_async(&self) -> Result<TraceResult, String> {
         super::trace_route_lite(self.clone(), &self.progress_tx).await
     }
     /// Sets the source IP address.

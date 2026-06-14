@@ -159,11 +159,11 @@ async fn trace_icmp(
 async fn tracert_icmp_lite(
     tracer: Tracer,
     progress_tx: &broadcast::Sender<Node>,
-) -> Result<(), String> {
+) -> Result<TraceResult, String> {
     let mut nodes: Vec<Node> = vec![];
     let mut ip_set: HashSet<IpAddr> = HashSet::new();
     let family = SocketFamily::from_ip(&tracer.dst_ip);
-
+    let start_time = Instant::now();
     for ttl in 1..=tracer.max_hop {
         let mut cfg = IcmpConfig::new(family);
         if tracer.dst_ip.is_ipv4() {
@@ -225,7 +225,12 @@ async fn tracert_icmp_lite(
         }
     }
 
-    Ok(())
+    let trace_time = Instant::now().duration_since(start_time);
+    Ok(TraceResult {
+        nodes,
+        status: TraceStatus::Done,
+        probe_time: trace_time,
+    })
 }
 
 async fn trace_udp(
@@ -355,7 +360,7 @@ pub(crate) async fn trace_route(
 pub(crate) async fn trace_route_lite(
     tracer: Tracer,
     progress_tx: &broadcast::Sender<Node>,
-) -> Result<(), String> {
+) -> Result<TraceResult, String> {
     match tracer.protocol {
         Protocol::Udp => Err(String::from("UDP traceroute_lite is not supported")),
         Protocol::Icmpv4 | Protocol::Icmpv6 => tracert_icmp_lite(tracer, progress_tx).await,
