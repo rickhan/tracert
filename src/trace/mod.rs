@@ -1,6 +1,6 @@
 mod probe;
 mod tracer;
-pub(crate) use probe::trace_route;
+pub(crate) use probe::{trace_route, trace_route_lite};
 pub use tracer::*;
 
 use crate::node::Node;

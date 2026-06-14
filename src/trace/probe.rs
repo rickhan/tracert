@@ -156,6 +156,78 @@ async fn trace_icmp(
     })
 }
 
+async fn tracert_icmp_lite(
+    tracer: Tracer,
+    progress_tx: &broadcast::Sender<Node>,
+) -> Result<(), String> {
+    let mut nodes: Vec<Node> = vec![];
+    let mut ip_set: HashSet<IpAddr> = HashSet::new();
+    let family = SocketFamily::from_ip(&tracer.dst_ip);
+
+    for ttl in 1..=tracer.max_hop {
+        let mut cfg = IcmpConfig::new(family);
+        if tracer.dst_ip.is_ipv4() {
+            cfg.ttl = Some(ttl as u32);
+            cfg.bind = Some(SocketAddr::new(tracer.src_ip, 0));
+        } else {
+            cfg.hop_limit = Some(ttl as u32);
+            cfg.bind = Some(SocketAddr::new(tracer.src_ip, 0));
+        }
+
+        let Ok(icmp_socket) = AsyncIcmpSocket::new(&cfg).await else {
+            continue;
+        };
+
+        let socket_addr = SocketAddr::new(tracer.dst_ip, 0);
+        let icmp_packet: Vec<u8> = if tracer.dst_ip.is_ipv4() {
+            packet::build_icmpv4_echo_packet()
+        } else {
+            packet::build_icmpv6_echo_packet()
+        };
+        let send_time = Instant::now();
+
+        let Ok(_) = icmp_socket.send_to(&icmp_packet, socket_addr).await else {
+            continue;
+        };
+
+        let mut buf = vec![0u8; 2048];
+        let recv =
+            tokio::time::timeout(tracer.receive_timeout, icmp_socket.recv_from(&mut buf)).await;
+        if let Ok(Ok((bytes_len, addr))) = recv {
+            let src_addr = addr.ip();
+            if ip_set.contains(&src_addr) {
+                continue;
+            }
+            if let Some((ip_addr, node_ttl, reached)) =
+                parse_trace_reply(tracer.dst_ip, &buf, bytes_len, src_addr)
+            {
+                let recv_time = Instant::now().duration_since(send_time);
+                let node = Node {
+                    sequence: ttl,
+                    ip_addr,
+                    hostname: ip_addr.to_string(),
+                    ttl: node_ttl,
+                    hop_count: Some(ttl),
+                    node_type: if reached {
+                        NodeType::Destination
+                    } else {
+                        NodeType::Hop
+                    },
+                    rtt: recv_time,
+                };
+                nodes.push(node.clone());
+                send_progress(progress_tx, node);
+                ip_set.insert(ip_addr);
+                if reached {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn trace_udp(
     tracer: Tracer,
     progress_tx: &broadcast::Sender<Node>,
@@ -277,5 +349,16 @@ pub(crate) async fn trace_route(
         Protocol::Udp => trace_udp(tracer, progress_tx).await,
         Protocol::Icmpv4 | Protocol::Icmpv6 => trace_icmp(tracer, progress_tx).await,
         Protocol::Tcp => Err(String::from("TCP traceroute is not supported")),
+    }
+}
+
+pub(crate) async fn trace_route_lite(
+    tracer: Tracer,
+    progress_tx: &broadcast::Sender<Node>,
+) -> Result<(), String> {
+    match tracer.protocol {
+        Protocol::Udp => Err(String::from("UDP traceroute_lite is not supported")),
+        Protocol::Icmpv4 | Protocol::Icmpv6 => tracert_icmp_lite(tracer, progress_tx).await,
+        Protocol::Tcp => Err(String::from("TCP traceroute_lite is not supported")),
     }
 }
